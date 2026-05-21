@@ -31,6 +31,8 @@ from dashboard.components.sector_monthly_returns import render_sector_monthly_re
 from dashboard.components.scenario_lab import render_scenario_lab
 from dashboard.components.heatmap import render_heatmap
 from dashboard.components.stock_view import render_stock_view
+from dashboard.components.ownership_flows import render_ownership_flows
+from dashboard.components.swing_ideas import render_swing_ideas
 
 
 _CUSTOM_CSS = """
@@ -383,7 +385,14 @@ def main():
 
     # --- Toggles (top of page, pill-style) ---
     toggle_left, toggle_mid, toggle_right = st.columns([3, 2, 1])
-    mode_options = ["Market Overview", "Stock View", "Target Hunter", "Scenario Lab"]
+    mode_options = [
+        "Market Overview",
+        "Stock View",
+        "Ownership Radar",
+        "Swing Ideas",
+        "Target Hunter",
+        "Scenario Lab",
+    ]
     view_options = ["Daily", "Weekly"]
 
     with toggle_left:
@@ -433,6 +442,16 @@ def main():
         # standalone surface; pulling the full market snapshot would add
         # seconds of latency to a flow the user might use for a quick lookup.
         render_stock_view()
+        return
+
+    # --- Ownership Radar mode ---
+    if mode == "Ownership Radar":
+        render_ownership_flows()
+        return
+
+    # --- Swing Ideas mode ---
+    if mode == "Swing Ideas":
+        render_swing_ideas()
         return
 
     # --- Scenario Lab mode ---
