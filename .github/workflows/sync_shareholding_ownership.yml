@@ -1,0 +1,67 @@
+name: Sync institutional ownership
+
+# NSE shareholding filings are quarterly, but companies publish them on
+# different dates after quarter-end. A weekday evening sweep is cheap because
+# the importer is idempotent and commits only when the ownership store changes.
+on:
+  schedule:
+    - cron: '15 14 * * 1-5'    # 19:45 IST, Mon-Fri
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "Universe to scrape"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - nifty50
+          - largecap
+          - midcap
+          - all
+      quarters:
+        description: "Latest quarters per symbol"
+        required: true
+        default: "6"
+      delay:
+        description: "Delay between NSE requests in seconds"
+        required: true
+        default: "0.45"
+
+concurrency:
+  group: sync-institutional-ownership
+  cancel-in-progress: false
+
+jobs:
+  sync-shareholding:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync FII/DII ownership from NSE
+        run: |
+          python -m scripts.sync_shareholding_from_nse \
+            --universe "${{ github.event.inputs.universe || 'all' }}" \
+            --quarters "${{ github.event.inputs.quarters || '6' }}" \
+            --delay "${{ github.event.inputs.delay || '0.45' }}"
+
+      - name: Commit ownership store changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add storage/shareholding/quarterly_ownership.csv
+          git diff --staged --quiet || git commit -m "chore: sync institutional ownership $(date -u +%Y-%m-%d)"
+          git push origin HEAD:master

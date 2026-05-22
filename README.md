@@ -23,6 +23,10 @@ python scripts/sync_shareholding_from_nse.py --universe nifty50 --quarters 4
 python scripts/sync_shareholding_from_nse.py --symbols RELIANCE,TCS,HDFCBANK --quarters 8
 ```
 
+Automation is handled by `.github/workflows/sync_shareholding_ownership.yml`.
+It runs at 19:45 IST on weekdays, scrapes the tracked universe from NSE, and
+commits `storage/shareholding/quarterly_ownership.csv` only when values change.
+
 Expected columns are flexible, but the importer needs the concepts
 `quarter`, `symbol`, `fii_pct`, and `dii_pct`. It computes quarter-on-quarter
 percentage-point deltas, relative ownership increase, and sector concentration.
