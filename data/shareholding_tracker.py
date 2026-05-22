@@ -34,6 +34,7 @@ INCOMING_DIR = SHAREHOLDING_DIR / "incoming"
 
 STORE_COLUMNS = [
     "quarter",
+    "as_on_date",
     "symbol",
     "company",
     "sector",
@@ -46,6 +47,7 @@ STORE_COLUMNS = [
 
 _COLUMN_ALIASES = {
     "quarter": {"quarter", "qtr", "period", "report_quarter", "shareholding_quarter"},
+    "as_on_date": {"as_on_date", "as_on", "date", "report_date", "shareholding_date"},
     "symbol": {"symbol", "ticker", "nse_symbol", "security", "scrip", "stock"},
     "company": {"company", "company_name", "name", "issuer"},
     "sector": {"sector", "industry"},
@@ -194,6 +196,11 @@ def normalize_quarterly_frame(
     out = pd.DataFrame()
     out["quarter"] = renamed["quarter"] if "quarter" in renamed.columns else quarter
     out["quarter"] = out["quarter"].map(normalize_quarter)
+    out["as_on_date"] = (
+        renamed["as_on_date"].astype(str).str.strip()
+        if "as_on_date" in renamed.columns
+        else out["quarter"]
+    )
     out["symbol"] = renamed["symbol"].astype(str).map(_normalize_symbol)
 
     out["company"] = (

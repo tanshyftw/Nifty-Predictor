@@ -106,7 +106,9 @@ class NSEShareholdingFetcher:
             return []
 
         rows: list[dict] = []
-        for filing in filings[: max(1, quarters)]:
+        for filing in filings:
+            if not is_regular_quarter_end(filing.get("date")):
+                continue
             record_id = filing.get("recordId")
             if not record_id:
                 continue
@@ -118,6 +120,7 @@ class NSEShareholdingFetcher:
 
             rows.append({
                 "quarter": normalize_quarter(filing.get("date")),
+                "as_on_date": filing.get("date"),
                 "symbol": symbol,
                 "company": filing.get("name") or symbol,
                 "fii_pct": parsed["fii_pct"],
@@ -125,6 +128,8 @@ class NSEShareholdingFetcher:
                 "source": filing.get("xbrl") or SHAREHOLDING_PAGE,
                 "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             })
+            if len(rows) >= max(1, quarters):
+                break
             time.sleep(self.request_delay)
         return rows
 
@@ -217,6 +222,14 @@ def parse_public_shareholding(rows: list[dict]) -> dict[str, float | None]:
     }
 
 
+def is_regular_quarter_end(value: object) -> bool:
+    """True for standard quarterly shareholding dates."""
+    dt = _parse_nse_date(value)
+    if dt is None:
+        return False
+    return (dt.month, dt.day) in {(3, 31), (6, 30), (9, 30), (12, 31)}
+
+
 _DII_FALLBACK_LABELS = {
     "mutual funds",
     "venture capital funds",
@@ -286,3 +299,15 @@ def _clean_label(value: object) -> str:
     for ch in text:
         keep.append(ch if ch.isalnum() else " ")
     return " ".join("".join(keep).split())
+
+
+def _parse_nse_date(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    for fmt in ("%d-%b-%Y", "%d-%B-%Y", "%d-%m-%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            pass
+    return None
