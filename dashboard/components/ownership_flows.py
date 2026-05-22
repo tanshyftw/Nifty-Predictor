@@ -15,10 +15,13 @@ from data.shareholding_tracker import (
     compute_ownership_deltas,
     ensure_shareholding_store,
     ingest_quarterly_file,
+    ingest_quarterly_records,
     latest_ownership_snapshot,
     load_ownership_history,
     sector_ownership_summary,
 )
+from data.sources.nse_shareholding_fetcher import NSEShareholdingFetcher
+from dashboard.universe import get_universe_symbols
 
 
 _CSS = """
@@ -135,7 +138,52 @@ def _store_mtime() -> float:
 
 
 def _render_importer():
-    with st.expander("Import quarterly data", expanded=False):
+    with st.expander("Sync or import quarterly data", expanded=False):
+        st.markdown("**Auto-sync from NSE**")
+        c0, c1, c2 = st.columns([2.5, 1, 1])
+        with c0:
+            raw_symbols = st.text_input(
+                "Symbols",
+                placeholder="RELIANCE,TCS,HDFCBANK or blank for full tracked universe",
+                key="ownership_nse_symbols",
+            )
+        with c1:
+            quarters = st.number_input("Quarters", min_value=1, max_value=12, value=4, step=1, key="ownership_nse_quarters")
+        with c2:
+            delay = st.number_input("Delay/sec", min_value=0.1, max_value=2.0, value=0.35, step=0.05, key="ownership_nse_delay")
+
+        if st.button("Sync from NSE", type="primary", key="ownership_nse_sync"):
+            symbols = (
+                [s.strip().upper() for s in raw_symbols.split(",") if s.strip()]
+                if raw_symbols.strip()
+                else get_universe_symbols()
+            )
+            with st.spinner(f"Fetching NSE shareholding filings for {len(symbols)} symbols..."):
+                try:
+                    fetcher = NSEShareholdingFetcher(request_delay=float(delay))
+                    frame, stats = fetcher.fetch_symbols(symbols, quarters=int(quarters))
+                    result = ingest_quarterly_records(frame, source="NSE corporate shareholding API")
+                    st.cache_data.clear()
+                    st.success(
+                        f"Fetched {stats.records_fetched} rows for "
+                        f"{stats.symbols_succeeded}/{stats.symbols_requested} symbols; "
+                        f"imported {result.rows_ingested} rows."
+                    )
+                    if stats.failures:
+                        with st.expander("NSE fetch misses", expanded=False):
+                            st.dataframe(
+                                pd.DataFrame([
+                                    {"symbol": k, "reason": v}
+                                    for k, v in stats.failures.items()
+                                ]),
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+                except Exception as exc:
+                    st.error(f"NSE sync failed: {exc}")
+
+        st.divider()
+        st.markdown("**Manual fallback**")
         c1, c2 = st.columns([2, 1])
         with c1:
             upload = st.file_uploader(

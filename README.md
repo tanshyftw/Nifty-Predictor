@@ -16,6 +16,13 @@ To import a new quarterly shareholding export:
 python scripts/update_shareholding.py storage/shareholding/incoming/q1_2026.csv --quarter 2026Q1
 ```
 
+To scrape the latest quarterly FII/DII ownership directly from NSE:
+
+```bash
+python scripts/sync_shareholding_from_nse.py --universe nifty50 --quarters 4
+python scripts/sync_shareholding_from_nse.py --symbols RELIANCE,TCS,HDFCBANK --quarters 8
+```
+
 Expected columns are flexible, but the importer needs the concepts
 `quarter`, `symbol`, `fii_pct`, and `dii_pct`. It computes quarter-on-quarter
 percentage-point deltas, relative ownership increase, and sector concentration.

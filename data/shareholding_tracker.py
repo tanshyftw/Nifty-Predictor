@@ -139,6 +139,39 @@ def ingest_quarterly_file(
     )
 
 
+def ingest_quarterly_records(
+    records: pd.DataFrame | list[dict],
+    *,
+    quarter: str | None = None,
+    store_path: Path = OWNERSHIP_STORE,
+    source: str = "automated",
+) -> IngestResult:
+    """Normalize and upsert fetched quarterly ownership records."""
+    incoming = pd.DataFrame(records)
+    normalized = normalize_quarterly_frame(incoming, quarter=quarter, source=source)
+    if normalized.empty:
+        raise ValueError("No valid ownership rows found in fetched records.")
+
+    current = load_ownership_history(store_path)
+    if current.empty:
+        merged = normalized
+    else:
+        keys = set(zip(normalized["quarter"], normalized["symbol"]))
+        keep = ~current.apply(lambda r: (r["quarter"], r["symbol"]) in keys, axis=1)
+        merged = pd.concat([current.loc[keep], normalized], ignore_index=True)
+
+    merged = _normalize_store_frame(merged)
+    merged.to_csv(ensure_shareholding_store(store_path), index=False)
+
+    return IngestResult(
+        store_path=store_path,
+        rows_ingested=len(normalized),
+        total_rows=len(merged),
+        quarters=tuple(sorted(normalized["quarter"].dropna().unique().tolist())),
+        symbols=tuple(sorted(normalized["symbol"].dropna().unique().tolist())),
+    )
+
+
 def normalize_quarterly_frame(
     df: pd.DataFrame,
     *,
