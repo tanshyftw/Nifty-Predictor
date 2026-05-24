@@ -1,5 +1,7 @@
 """Market overview: Nifty 50 KPIs and sectoral chip cards."""
 
+from __future__ import annotations
+
 import streamlit as st
 import pandas as pd
 from loguru import logger

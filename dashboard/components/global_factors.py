@@ -1,5 +1,7 @@
 """Global indices and supply chain factors — value-chain visualization."""
 
+from __future__ import annotations
+
 import streamlit as st
 import pandas as pd
 

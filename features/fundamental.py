@@ -4,6 +4,8 @@ Reads fundamental data from the database and computes features including
 sector-relative metrics.
 """
 
+from __future__ import annotations
+
 import math
 
 import numpy as np

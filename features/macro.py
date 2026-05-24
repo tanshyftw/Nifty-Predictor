@@ -3,6 +3,8 @@ Macro/index feature computation.
 Extracts global index returns, VIX, FII/DII flows, and sector-relative features.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 import numpy as np
 from loguru import logger

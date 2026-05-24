@@ -4,6 +4,8 @@ Handles OHLCV data, fundamentals, and earnings calendar.
 Compatible with yfinance 0.2.x and 1.x APIs.
 """
 
+from __future__ import annotations
+
 import time
 from datetime import date, timedelta
 
@@ -17,6 +19,8 @@ from config.nifty50_tickers import (
     symbol_to_yahoo,
     NIFTY50_STOCKS,
 )
+
+YFINANCE_TIMEOUT_SECONDS = 8
 
 
 class YahooFetcher:
@@ -50,6 +54,7 @@ class YahooFetcher:
                     group_by="ticker",
                     progress=False,
                     threads=True,
+                    timeout=YFINANCE_TIMEOUT_SECONDS,
                 )
 
                 if data.empty:
@@ -193,6 +198,7 @@ class YahooFetcher:
                     end=end_date,
                     interval="1d",
                     progress=False,
+                    timeout=YFINANCE_TIMEOUT_SECONDS,
                 )
                 if data.empty:
                     return None
@@ -237,6 +243,7 @@ class YahooFetcher:
                     group_by="ticker",
                     progress=False,
                     threads=True,
+                    timeout=YFINANCE_TIMEOUT_SECONDS,
                 )
 
                 if data.empty:

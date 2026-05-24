@@ -9,7 +9,7 @@ since analyst data moves much more slowly (hours/days, not minutes).
 
 import sys
 import os
-import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -46,6 +46,8 @@ _INFO_KEYS = (
     "beta",
     "marketCap",
 )
+
+_ANALYST_FETCH_WORKERS = 8
 
 
 @dataclass
@@ -183,34 +185,48 @@ def _universe_items(universe: Universe) -> list[tuple[str, tuple[str, str, str],
     return items
 
 
+def _fetch_symbol_snapshot(
+    symbol: str,
+    yahoo_ticker: str,
+    uni_label: str,
+) -> tuple[str, dict, pd.DataFrame, bool]:
+    """Fetch analyst target, ATH, and revisions for one symbol."""
+    t = yf.Ticker(yahoo_ticker)
+    targets = _fetch_analyst_targets(t)
+    if not targets or targets.get("numberOfAnalystOpinions", 0) == 0:
+        return symbol, {}, pd.DataFrame(), False
+
+    targets["universe"] = uni_label
+    targets.update(_fetch_ath(t))
+    revisions = _fetch_recent_revisions(t, TARGET_REVISION_WINDOW_DAYS)
+    return symbol, targets, revisions, True
+
+
 @st.cache_data(ttl=ANALYST_CACHE_TTL_SECONDS, show_spinner="Fetching analyst targets...")
 def load_analyst_snapshot(universe: Universe = "Nifty 50") -> AnalystSnapshot:
     """Fetch analyst targets + revisions + 5y ATH for every stock in the universe."""
     snapshot = AnalystSnapshot(timestamp=datetime.now(IST), universe=universe)
 
     items = _universe_items(universe)
-    for i, (symbol, (yahoo_ticker, _company, _sector), uni_label) in enumerate(items):
-        try:
-            t = yf.Ticker(yahoo_ticker)
-            targets = _fetch_analyst_targets(t)
-            if not targets or targets.get("numberOfAnalystOpinions", 0) == 0:
+    max_workers = min(_ANALYST_FETCH_WORKERS, max(1, len(items)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_fetch_symbol_snapshot, symbol, yahoo_ticker, uni_label): symbol
+            for symbol, (yahoo_ticker, _company, _sector), uni_label in items
+        }
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                sym, targets, revisions, covered = future.result()
+                if not covered:
+                    snapshot.failed.append(sym)
+                    continue
+                snapshot.targets[sym] = targets
+                if not revisions.empty:
+                    snapshot.revisions[sym] = revisions
+            except Exception as e:
+                logger.debug(f"Analyst fetch failed for {symbol}: {e}")
                 snapshot.failed.append(symbol)
-                continue
-
-            targets["universe"] = uni_label
-            targets.update(_fetch_ath(t))
-
-            snapshot.targets[symbol] = targets
-            revisions = _fetch_recent_revisions(t, TARGET_REVISION_WINDOW_DAYS)
-            if not revisions.empty:
-                snapshot.revisions[symbol] = revisions
-        except Exception as e:
-            logger.debug(f"Analyst fetch failed for {symbol}: {e}")
-            snapshot.failed.append(symbol)
-
-        # Gentle rate-limit against Yahoo
-        if i < len(items) - 1:
-            time.sleep(0.3)
 
     logger.info(
         f"Analyst snapshot [{universe}]: {len(snapshot.targets)} covered, "

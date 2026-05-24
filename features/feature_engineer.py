@@ -4,6 +4,8 @@ Combines technical, sentiment, fundamental, macro, and temporal features
 into a single feature vector per stock per day.
 """
 
+from __future__ import annotations
+
 from datetime import date, datetime, timedelta
 
 import pandas as pd

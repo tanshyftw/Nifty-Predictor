@@ -31,9 +31,10 @@ Expected columns are flexible, but the importer needs the concepts
 `quarter`, `symbol`, `fii_pct`, and `dii_pct`. It computes quarter-on-quarter
 percentage-point deltas, relative ownership increase, and sector concentration.
 
-## Swing ideas
+## Market Overview opportunity tiles
 
-`Swing Ideas` scans the tracked universe for recurring technical setups:
+Market Overview includes on-demand opportunity tiles for analyst upside and
+swing setups. The swing scan looks for recurring technical patterns:
 
 - Momentum breakout
 - Trend pullback
@@ -41,3 +42,5 @@ percentage-point deltas, relative ownership increase, and sector concentration.
 
 Each idea includes entry, stop, targets, reward/risk, rationale, and
 invalidation so it can be used as an action board rather than a black-box call.
+The scans are loaded only when requested from Market Overview, keeping the
+initial dashboard load focused on live market data.

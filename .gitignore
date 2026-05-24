@@ -1,4 +1,5 @@
 .env
+.venv/
 storage/nifty_predictor.db
 storage/logs/
 storage/dashboard_cache/

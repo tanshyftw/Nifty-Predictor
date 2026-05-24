@@ -3,6 +3,8 @@ NSE India data fetcher for FII/DII trading activity.
 Uses nselib derivatives.participant_wise_trading_volume for institutional flow data.
 """
 
+from __future__ import annotations
+
 import time
 from datetime import date, timedelta, datetime
 

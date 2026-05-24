@@ -3,6 +3,8 @@ News sentiment feature computation.
 Reads sentiment data from the database and computes features.
 """
 
+from __future__ import annotations
+
 import pandas as pd
 from loguru import logger
 

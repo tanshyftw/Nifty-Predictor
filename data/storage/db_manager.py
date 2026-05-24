@@ -3,6 +3,8 @@ SQLite database manager for the Nifty Predictor system.
 Handles schema creation, connection management, and core CRUD operations.
 """
 
+from __future__ import annotations
+
 import sqlite3
 import json
 from pathlib import Path

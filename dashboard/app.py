@@ -24,15 +24,14 @@ from dashboard.components.top_movers import render_top_movers
 from dashboard.components.macro_panel import render_macro_panel
 from dashboard.components.global_factors import render_global_indices, render_supply_chain
 from dashboard.components.sector_deep_dive import render_sector_deep_dive
-from dashboard.components.target_hunter import render_target_hunter
+from dashboard.components.target_hunter import render_target_hunter_tiles
 from dashboard.components.ema_chart import render_ema_chart
 from dashboard.components.sector_momentum import render_sector_momentum
 from dashboard.components.sector_monthly_returns import render_sector_monthly_returns
-from dashboard.components.scenario_lab import render_scenario_lab
 from dashboard.components.heatmap import render_heatmap
 from dashboard.components.stock_view import render_stock_view
 from dashboard.components.ownership_flows import render_ownership_flows
-from dashboard.components.swing_ideas import render_swing_ideas
+from dashboard.components.swing_ideas import render_swing_ideas_tiles
 
 
 _CUSTOM_CSS = """
@@ -389,9 +388,6 @@ def main():
         "Market Overview",
         "Stock View",
         "Ownership Radar",
-        "Swing Ideas",
-        "Target Hunter",
-        "Scenario Lab",
     ]
     view_options = ["Daily", "Weekly"]
 
@@ -429,13 +425,6 @@ def main():
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # --- Target Hunter mode ---
-    if mode == "Target Hunter":
-        snapshot = load_market_snapshot(view="daily", _bucket=_market_minute_bucket())
-        render_header(snapshot)
-        render_target_hunter()
-        return
-
     # --- Stock View mode ---
     if mode == "Stock View":
         # No snapshot or sector fan-out needed — the stock view is its own
@@ -447,16 +436,6 @@ def main():
     # --- Ownership Radar mode ---
     if mode == "Ownership Radar":
         render_ownership_flows()
-        return
-
-    # --- Swing Ideas mode ---
-    if mode == "Swing Ideas":
-        render_swing_ideas()
-        return
-
-    # --- Scenario Lab mode ---
-    if mode == "Scenario Lab":
-        render_scenario_lab()
         return
 
     # --- Market Overview mode ---
@@ -479,6 +458,10 @@ def main():
         render_ema_chart(view=view_key)
         _spacer()
         render_top_movers(snapshot)
+        _spacer()
+        render_target_hunter_tiles(limit=6)
+        _spacer()
+        render_swing_ideas_tiles(limit=6)
 
     with tab_heatmap:
         render_heatmap(view=view_key, snapshot=snapshot)

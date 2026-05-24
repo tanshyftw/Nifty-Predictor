@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 from loguru import logger
+from html import escape
 
 from config.largecap_extra_tickers import LARGECAP_NEXT50_STOCKS
 from config.midcap_tickers import MIDCAP_STOCKS
@@ -237,6 +238,90 @@ _CSS = """
 .swing-card .invalid b { color:#eb5757; }
 </style>
 """
+
+_OVERVIEW_SWING_CSS = """
+<style>
+.swing-tile-grid {
+    display:grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap:12px;
+    margin:10px 0 4px 0;
+}
+.swing-tile {
+    background:linear-gradient(180deg, #141924 0%, #0f131c 100%);
+    border:1px solid #232834;
+    border-radius:10px;
+    padding:14px 16px;
+    position:relative;
+    overflow:hidden;
+}
+.swing-tile:hover { border-color:#2f3645; }
+.swing-tile .strip { position:absolute;left:0;top:0;bottom:0;width:3px; }
+.swing-tile .symbol { color:#e8ecf1;font-size:1.0rem;font-weight:700; }
+.swing-tile .company { color:#7a8294;font-size:0.76rem;margin-top:2px;min-height:18px; }
+.swing-tile .score { color:#e8ecf1;font-size:1.25rem;font-weight:700;margin-top:10px; }
+.swing-tile .setup { font-size:0.76rem;font-weight:600;margin-top:4px; }
+.swing-tile .meta { color:#c9cfd9;font-size:0.78rem;line-height:1.45;margin-top:8px; }
+.swing-tile .muted { color:#7a8294; }
+@media (max-width: 900px) {
+    .swing-tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+    .swing-tile-grid { grid-template-columns: 1fr; }
+}
+</style>
+"""
+
+
+def render_swing_ideas_tiles(limit: int = 6):
+    """Render compact swing setup cards inside Market Overview."""
+    st.markdown(_OVERVIEW_SWING_CSS, unsafe_allow_html=True)
+    st.subheader("Swing Ideas")
+
+    load_key = "overview_swing_ideas_loaded"
+    if not st.session_state.get(load_key, False):
+        st.markdown(
+            '<div class="overview-load-card">'
+            '<div style="color:#e8ecf1;font-weight:600;margin-bottom:4px;">Technical setup tiles</div>'
+            '<div style="color:#7a8294;font-size:0.82rem;">Loads on demand so Market Overview stays fast.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Load swing tiles", key="load_swing_tiles"):
+            st.session_state[load_key] = True
+            st.rerun()
+        return
+
+    universe = "Nifty 50"
+    stocks = _stocks_for_universe(universe)
+    with st.spinner("Scanning swing setups..."):
+        histories, index_close = _load_swing_history(universe, _market_minute_bucket())
+
+    metadata = {symbol: (meta[1], meta[2]) for symbol, meta in stocks.items()}
+    ideas = build_swing_ideas(histories, metadata, index_close=index_close, min_score=60.0)
+
+    if ideas.empty:
+        st.info("No swing setups passed the default quality bar right now.")
+        return
+
+    tiles = []
+    for _, row in ideas.head(limit).iterrows():
+        setup = str(row["setup"])
+        meta = _SETUP_META.get(setup, {"color": "#7a8294", "icon": "", "tagline": ""})
+        color = meta["color"]
+        tiles.append(
+            "<div class='swing-tile'>"
+            f"<div class='strip' style='background:{color};'></div>"
+            f"<div class='symbol'>{escape(str(row['symbol']))}</div>"
+            f"<div class='company'>{escape(str(row['company']))} · {escape(str(row['sector']))}</div>"
+            f"<div class='score' style='color:{color};'>{float(row['score']):.0f}<span style='font-size:0.78rem;color:#7a8294;'>/100</span></div>"
+            f"<div class='setup' style='color:{color};'>{escape(meta['icon'])} {escape(setup)}</div>"
+            f"<div class='meta'>Entry ₹{float(row['entry']):,.2f} · Stop ₹{float(row['stop']):,.2f}</div>"
+            f"<div class='meta muted'>T1 ₹{float(row['target_1']):,.2f} · R:R {float(row['reward_risk']):.1f}x · {escape(str(row['horizon']))}</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='swing-tile-grid'>{''.join(tiles)}</div>", unsafe_allow_html=True)
+    st.caption("Default scan: Nifty 50, minimum setup quality 60/100, top ranked ideas.")
 
 
 def render_swing_ideas():

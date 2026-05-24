@@ -9,6 +9,7 @@ Universe switch covers Nifty 50, a curated Midcap subset, or both.
 import sys
 import os
 from datetime import datetime
+from html import escape
 
 import numpy as np
 import pandas as pd
@@ -445,6 +446,162 @@ def _build_table_html(df: pd.DataFrame, horizon: str) -> str:
         + '</tr></thead><tbody>'
         + "".join(rows_html)
         + "</tbody></table>"
+    )
+
+
+_OVERVIEW_TILE_CSS = """
+<style>
+.target-tile-grid {
+    display:grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap:12px;
+    margin:10px 0 4px 0;
+}
+.target-tile {
+    background:linear-gradient(180deg, #141924 0%, #0f131c 100%);
+    border:1px solid #232834;
+    border-radius:10px;
+    padding:14px 16px;
+}
+.target-tile:hover { border-color:#00a67c; }
+.target-tile .symbol { color:#e8ecf1; font-size:1.0rem; font-weight:700; }
+.target-tile .company { color:#7a8294; font-size:0.76rem; margin-top:2px; min-height:18px; }
+.target-tile .upside { color:#00d09c; font-size:1.35rem; font-weight:700; margin:9px 0 2px; }
+.target-tile .meta { color:#c9cfd9; font-size:0.78rem; line-height:1.45; }
+.target-tile .muted { color:#7a8294; }
+.overview-load-card {
+    background:#11151d;
+    border:1px solid #232834;
+    border-radius:10px;
+    padding:14px 16px;
+    margin-top:8px;
+}
+@media (max-width: 900px) {
+    .target-tile-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+    .target-tile-grid { grid-template-columns: 1fr; }
+}
+</style>
+"""
+
+
+def _build_target_candidates(
+    *,
+    universe: str = "Nifty 50",
+    horizon: str = "12M",
+    min_upside: float = TARGET_HUNTER_MIN_UPSIDE,
+    min_analysts: int = TARGET_HUNTER_MIN_ANALYSTS,
+    min_tech_score: int = TARGET_HUNTER_TECH_SCORE_THRESHOLD,
+) -> tuple[pd.DataFrame, AnalystSnapshot]:
+    """Build the Target Hunter candidate frame without rendering filters."""
+    analyst = load_analyst_snapshot(universe=universe)
+    tech_history = _load_technical_history(universe=universe)
+    stocks_meta = _universe_stocks(universe)
+
+    rows = []
+    for symbol, t in analyst.targets.items():
+        current = t.get("currentPrice") or 0.0
+        target_mean = t.get("targetMeanPrice") or 0.0
+        target_high = t.get("targetHighPrice") or 0.0
+        target_low = t.get("targetLowPrice") or 0.0
+        num_analysts = t.get("numberOfAnalystOpinions") or 0
+
+        if current <= 0 or target_mean <= 0:
+            continue
+
+        upside = (target_mean - current) / current
+        spread_pct = (
+            (target_high - target_low) / target_mean * 100
+            if target_mean and target_high and target_low else 100.0
+        )
+        tech = _technical_breakdown(tech_history.get(symbol))
+        tech_score = tech.get("score", 0.0)
+        rsi = tech.get("rsi", 50.0)
+        macd_bullish = tech.get("signals", {}).get("macd_bullish", False)
+        beta = t.get("beta") or 1.0
+        conviction, c_score = _conviction_band(
+            spread_pct, num_analysts, tech_score, upside * 100, macd_bullish,
+        )
+        eta_m, eta_bucket = _eta_months(upside * 100, beta, macd_bullish, rsi)
+        horizon_target = _scale_to_horizon(current, target_mean, eta_m, horizon)
+        fair_exit = _compute_fair_exit(current, target_mean, target_high, tech_score)
+
+        meta = stocks_meta.get(symbol, (None, symbol, "Unknown"))
+        rows.append({
+            "Symbol": symbol,
+            "Company": meta[1],
+            "Sector": meta[2],
+            "Current": current,
+            "Mean Target": target_mean,
+            "Horizon Target": round(horizon_target, 2),
+            "Upside %": round(upside * 100, 2),
+            "Analysts": num_analysts,
+            "Tech Score": round(tech_score, 0),
+            "Fair Exit": round(fair_exit, 2),
+            "Conviction": conviction,
+            "Conviction Score": c_score,
+            "ETA": eta_bucket,
+            "ETA (months)": eta_m,
+            "Drawdown %": round(t.get("drawdown_pct") or 0.0, 2),
+        })
+
+    if not rows:
+        return pd.DataFrame(), analyst
+
+    df = pd.DataFrame(rows)
+    df = df[
+        (df["Upside %"] >= min_upside * 100)
+        & (df["Analysts"] >= min_analysts)
+        & (df["Tech Score"] >= min_tech_score)
+    ]
+    return df.sort_values("Conviction Score", ascending=False), analyst
+
+
+def render_target_hunter_tiles(limit: int = 6):
+    """Render compact Target Hunter cards inside Market Overview."""
+    st.markdown(_OVERVIEW_TILE_CSS, unsafe_allow_html=True)
+    st.subheader("Target Hunter")
+
+    load_key = "overview_target_hunter_loaded"
+    if not st.session_state.get(load_key, False):
+        st.markdown(
+            '<div class="overview-load-card">'
+            '<div style="color:#e8ecf1;font-weight:600;margin-bottom:4px;">Analyst upside tiles</div>'
+            '<div style="color:#7a8294;font-size:0.82rem;">Loads on demand so Market Overview stays fast.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("Load target tiles", key="load_target_tiles"):
+            st.session_state[load_key] = True
+            st.rerun()
+        return
+
+    with st.spinner("Finding analyst-backed upside ideas..."):
+        df, analyst = _build_target_candidates(universe="Nifty 50", horizon="12M")
+
+    if df.empty:
+        st.info("No Target Hunter candidates passed the default quality bar.")
+        return
+
+    tiles = []
+    for _, r in df.head(limit).iterrows():
+        upside_color = "#00d09c" if r["Upside %"] >= 0 else "#ff6b6b"
+        tiles.append(
+            "<div class='target-tile'>"
+            f"<div class='symbol'>{escape(str(r['Symbol']))}</div>"
+            f"<div class='company'>{escape(str(r['Company']))} · {escape(str(r['Sector']))}</div>"
+            f"<div class='upside' style='color:{upside_color};'>{r['Upside %']:+.1f}%</div>"
+            f"<div class='meta'>Now ₹{r['Current']:,.0f} → Target ₹{r['Mean Target']:,.0f}</div>"
+            f"<div class='meta muted'>{r['Conviction']} conviction · ETA {r['ETA']} · "
+            f"{int(r['Analysts'])} analysts · Tech {int(r['Tech Score'])}/100</div>"
+            "</div>"
+        )
+    st.markdown(f"<div class='target-tile-grid'>{''.join(tiles)}</div>", unsafe_allow_html=True)
+    st.caption(
+        f"Default scan: Nifty 50, {TARGET_HUNTER_MIN_UPSIDE:.0%}+ upside, "
+        f"{TARGET_HUNTER_MIN_ANALYSTS}+ analysts, {TARGET_HUNTER_TECH_SCORE_THRESHOLD}+ tech score. "
+        f"Snapshot {analyst.timestamp.strftime('%I:%M %p IST')}."
     )
 
 

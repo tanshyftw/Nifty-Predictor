@@ -5,9 +5,12 @@ new fetching for sectoral indices and supply chain factors.
 All functions use @st.cache_data for smart caching.
 """
 
+from __future__ import annotations
+
 import sys
 import os
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
@@ -48,6 +51,10 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # NSE regular session (IST)
 _MARKET_OPEN = (9, 15)
 _MARKET_CLOSE = (15, 30)
+MARKET_OVERVIEW_UNIVERSE = NIFTY50_STOCKS
+YFINANCE_TIMEOUT_SECONDS = 8
+SNAPSHOT_FETCH_DEADLINE_SECONDS = 12
+LIVE_QUOTE_DEADLINE_SECONDS = 4
 
 
 def is_market_open_now(now: datetime | None = None) -> bool:
@@ -233,8 +240,9 @@ def _fetch_live_quotes_cached(_bucket: str = "") -> dict[str, dict]:
     quote endpoint which stays current through the session, so we use it as
     the source of truth for "latest price" and "previous-day close".
 
-    Universe: expanded (Nifty 50 + Next 50 + Midcap) + Nifty 50 index + India
-    VIX + USD/INR. Cached on the same minute bucket as load_market_snapshot.
+    Universe: Nifty 50 + Nifty 50 index + India VIX + USD/INR. Cached on the
+    same minute bucket as load_market_snapshot. Broader scans are loaded only
+    on demand so the default overview stays responsive.
     """
     del _bucket
 
@@ -242,7 +250,7 @@ def _fetch_live_quotes_cached(_bucket: str = "") -> dict[str, dict]:
 
     yt_list: list[str] = []
     yt_to_sym: dict[str, str] = {}
-    for sym, (yt, _, _) in EXPANDED_UNIVERSE.items():
+    for sym, (yt, _, _) in MARKET_OVERVIEW_UNIVERSE.items():
         if yt not in yt_to_sym:
             yt_list.append(yt)
             yt_to_sym[yt] = sym
@@ -301,10 +309,14 @@ def load_market_snapshot(view: str = "daily", _bucket: str = "") -> MarketSnapsh
         last_trading_date=trading_day.isoformat(),
     )
 
-    # Fetch live-quote overlay first; everything below uses it as the
-    # source-of-truth for "latest" and "previous close" so DoD is correct
-    # even when Yahoo's daily candle hasn't rolled forward yet.
-    live_quotes = _fetch_live_quotes_cached(_bucket=_bucket)
+    # The live quote overlay is only worth the extra per-symbol fast_info fanout
+    # during market hours. Off-hours/weekends should use daily candles so cold
+    # starts do not wait on 50 quote endpoints before rendering.
+    live_quotes = (
+        _fetch_live_quotes_bounded(_bucket)
+        if snapshot.is_market_open
+        else {}
+    )
 
     # Critical path: universe (top movers, breadth, heatmap) + macro (key
     # metrics chips, FII/DII). Both are independent network calls; run them
@@ -312,17 +324,54 @@ def load_market_snapshot(view: str = "daily", _bucket: str = "") -> MarketSnapsh
     # batch — the two outer threads are a tiny multiplier compared with the
     # per-ticker fan-out yfinance already does, and in testing Yahoo did not
     # rate-limit at this concurrency.
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_stocks = ex.submit(_populate_stock_data, snapshot, period, live_quotes)
-        f_macro = ex.submit(_populate_macro_data, snapshot, period, live_quotes)
-        f_stocks.result()
-        f_macro.result()
+    _populate_snapshot_bounded(snapshot, period, live_quotes)
 
     # Sectoral and supply chain are NOT loaded here — they're only needed by
     # the Sectors and Macro & Global tabs. Lazy-loading them via
     # `attach_sectoral_data` / `attach_supply_chain_data` in app.py shaves
     # ~1s off Market Overview cold start.
     return snapshot
+
+
+def _fetch_live_quotes_bounded(bucket: str) -> dict[str, dict]:
+    """Fetch live quotes without letting fast_info block first paint."""
+    ex = ThreadPoolExecutor(max_workers=1)
+    future = ex.submit(_fetch_live_quotes_cached, _bucket=bucket)
+    try:
+        return future.result(timeout=LIVE_QUOTE_DEADLINE_SECONDS)
+    except TimeoutError:
+        logger.warning("Live quote overlay timed out; using historical closes")
+        return {}
+    except Exception as e:
+        logger.warning(f"Live quote overlay failed: {e}")
+        return {}
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
+def _populate_snapshot_bounded(
+    snapshot: MarketSnapshot,
+    period: str,
+    live_quotes: dict[str, dict],
+):
+    """Populate critical snapshot data under a fixed first-paint deadline."""
+    ex = ThreadPoolExecutor(max_workers=2)
+    futures = {
+        "stocks": ex.submit(_populate_stock_data, snapshot, period, live_quotes),
+        "macro": ex.submit(_populate_macro_data, snapshot, period, live_quotes),
+    }
+    deadline = time.monotonic() + SNAPSHOT_FETCH_DEADLINE_SECONDS
+    try:
+        for name, future in futures.items():
+            remaining = max(0.1, deadline - time.monotonic())
+            try:
+                future.result(timeout=remaining)
+            except TimeoutError:
+                logger.warning(f"{name} fetch timed out; rendering partial snapshot")
+            except Exception as e:
+                logger.warning(f"{name} fetch failed: {e}")
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
 
 def attach_sectoral_data(snapshot: MarketSnapshot, period: str = "1mo") -> MarketSnapshot:
@@ -401,6 +450,7 @@ def _fetch_macro_batch_cached(_bucket: str = "") -> dict[str, pd.Series]:
             auto_adjust=True,
             progress=False,
             threads=True,
+            timeout=YFINANCE_TIMEOUT_SECONDS,
         )
     except Exception as e:
         logger.warning(f"macro batch fetch failed: {e}")
@@ -439,13 +489,12 @@ def _fetch_macro_batch_cached(_bucket: str = "") -> dict[str, pd.Series]:
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 def _fetch_universe_ohlcv(period: str = "1mo") -> dict[str, pd.DataFrame]:
-    """Batch-download daily OHLCV for the expanded dashboard universe.
+    """Batch-download daily OHLCV for the default Market Overview universe.
 
-    Mirrors the lower-level YahooFetcher batch path but is keyed on the
-    expanded universe (Nifty 50 + Next 50 + Midcap) so dashboard surfaces
-    aren't capped at Nifty 50.
+    Keep this to the Nifty 50. The broader Largecap+/Midcap scans are heavier
+    and now live behind on-demand tiles or secondary views.
     """
-    yt_to_sym = {info[0]: sym for sym, info in EXPANDED_UNIVERSE.items()}
+    yt_to_sym = {info[0]: sym for sym, info in MARKET_OVERVIEW_UNIVERSE.items()}
     tickers_str = " ".join(yt_to_sym.keys())
 
     try:
@@ -457,6 +506,7 @@ def _fetch_universe_ohlcv(period: str = "1mo") -> dict[str, pd.DataFrame]:
             auto_adjust=True,
             progress=False,
             threads=True,
+            timeout=YFINANCE_TIMEOUT_SECONDS,
         )
     except Exception as e:
         logger.warning(f"Universe batch fetch failed: {e}")
@@ -497,10 +547,7 @@ def _fetch_universe_ohlcv(period: str = "1mo") -> dict[str, pd.DataFrame]:
 
 
 def _populate_stock_data(snapshot: MarketSnapshot, period: str, live_quotes: dict | None = None):
-    """Fetch expanded-universe stock prices (Nifty 50 + Next 50 + Midcap) and
-    compute movers. The universe is wider than the model-training pipeline's
-    Nifty 50 because dashboard surfaces (top movers, breadth, sector deep-dive)
-    benefit from broader large+midcap coverage."""
+    """Fetch default Market Overview stock prices and compute movers."""
     live_quotes = live_quotes or {}
     try:
         stock_data = _fetch_universe_ohlcv(period=period)
@@ -541,7 +588,7 @@ def _populate_stock_data(snapshot: MarketSnapshot, period: str, live_quotes: dic
 
             volume = int(df[vol_col].iloc[-1]) if vol_col and pd.notna(df[vol_col].iloc[-1]) else 0
 
-            meta = EXPANDED_UNIVERSE.get(symbol, (None, symbol, "Unknown"))
+            meta = MARKET_OVERVIEW_UNIVERSE.get(symbol, (None, symbol, "Unknown"))
             company = meta[1]
             sector = meta[2]
 
@@ -646,7 +693,7 @@ def _load_fii_dii_with_today() -> list[dict]:
 
     if not is_trading_day(today):
         # No new print expected — return the baseline as-is.
-        return precomputed or _live_fii_dii_fallback()
+        return precomputed or []
 
     try:
         nf = NSEFetcher(max_retries=2, retry_delay=1.0)
@@ -659,18 +706,14 @@ def _load_fii_dii_with_today() -> list[dict]:
     if precomputed:
         return merge_today_into_fii_dii(precomputed, today_record)
 
-    # Cold fallback: no parquet on disk yet (first deploy / CI hasn't run)
-    fallback = _live_fii_dii_fallback()
-    if today_record and not any(
-        (r.get("date") or "")[:10] == (today_record.get("date") or "")[:10]
-        for r in fallback
-    ):
-        fallback = merge_today_into_fii_dii(fallback, today_record)
-    return fallback
+    # Cold fallback: no parquet on disk yet (first deploy / CI hasn't run).
+    # Avoid the old 30-day live retry loop on app startup; it is a latency trap
+    # and some nselib releases do not import cleanly on Python 3.9.
+    return [today_record] if today_record else []
 
 
 def _live_fii_dii_fallback() -> list[dict]:
-    """Last-resort 30-day live fetch when the precomputed baseline is missing."""
+    """Manual last-resort live fetch when a caller explicitly needs it."""
     try:
         nf = NSEFetcher(max_retries=2, retry_delay=1.0)
         return nf.fetch_recent_fii_dii(lookback_days=30) or []
@@ -729,6 +772,7 @@ def _fetch_single_ticker(ticker: str, period: str) -> pd.Series:
         data = yf.download(
             ticker, period=period, interval="1d",
             auto_adjust=True, progress=False, threads=False,
+            timeout=YFINANCE_TIMEOUT_SECONDS,
         )
         if data.empty:
             return pd.Series(dtype=float)
@@ -822,6 +866,7 @@ def _populate_sectoral_data(snapshot: MarketSnapshot, period: str):
             auto_adjust=True,
             progress=False,
             threads=True,
+            timeout=YFINANCE_TIMEOUT_SECONDS,
         )
 
         if data.empty:
@@ -894,6 +939,7 @@ def _populate_supply_chain(snapshot: MarketSnapshot, period: str):
             auto_adjust=True,
             progress=False,
             threads=True,
+            timeout=YFINANCE_TIMEOUT_SECONDS,
         )
 
         if data.empty:

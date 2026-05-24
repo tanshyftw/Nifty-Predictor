@@ -3,6 +3,8 @@ Global indices and currency data fetcher.
 Fetches S&P 500, NASDAQ, Dow, FTSE, Nikkei, Hang Seng, India VIX, USD/INR.
 """
 
+from __future__ import annotations
+
 import time
 from datetime import date, timedelta
 
