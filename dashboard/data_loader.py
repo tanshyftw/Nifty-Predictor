@@ -686,34 +686,40 @@ def _load_fii_dii_with_today() -> list[dict]:
     On cold start in production this costs ~50ms (parquet read) + at most one
     nselib round-trip for the current day. The old path made up to 30 nselib
     calls with retry sleeps, accounting for 2–5s of dashboard latency.
+
+    If the parquet is missing or stale (CI hasn't refreshed it), we fall back
+    to a live 30-day lookback so the macro panel still shows flows, chart, and
+    WoW/MoM aggregates — cached separately so the lookback only runs once per
+    hour rather than on every 60-second page refresh.
     """
     precomputed = _load_precomputed_fii_dii(max_age_days=3)
     today = date.today()
     today_record: dict | None = None
 
-    if not is_trading_day(today):
-        # No new print expected — return the baseline as-is.
-        return precomputed or []
-
-    try:
-        nf = NSEFetcher(max_retries=2, retry_delay=1.0)
-        today_only = nf.fetch_fii_dii(today.isoformat(), today.isoformat())
-        if today_only:
-            today_record = today_only[-1]
-    except Exception as e:
-        logger.debug(f"Today's FII/DII fetch failed (using baseline only): {e}")
+    if is_trading_day(today):
+        try:
+            nf = NSEFetcher(max_retries=2, retry_delay=1.0)
+            today_only = nf.fetch_fii_dii(today.isoformat(), today.isoformat())
+            if today_only:
+                today_record = today_only[-1]
+        except Exception as e:
+            logger.debug(f"Today's FII/DII fetch failed (using baseline only): {e}")
 
     if precomputed:
         return merge_today_into_fii_dii(precomputed, today_record)
 
-    # Cold fallback: no parquet on disk yet (first deploy / CI hasn't run).
-    # Avoid the old 30-day live retry loop on app startup; it is a latency trap
-    # and some nselib releases do not import cleanly on Python 3.9.
+    # Cold fallback: no parquet on disk (CI never ran or has been failing).
+    # Do the full live lookback so WoW/MoM/chart still work; the result is
+    # cached for an hour so this 30-call loop doesn't repeat on every reload.
+    baseline = _live_fii_dii_lookback()
+    if baseline:
+        return merge_today_into_fii_dii(baseline, today_record)
     return [today_record] if today_record else []
 
 
-def _live_fii_dii_fallback() -> list[dict]:
-    """Manual last-resort live fetch when a caller explicitly needs it."""
+@st.cache_data(ttl=3600, show_spinner=False)
+def _live_fii_dii_lookback() -> list[dict]:
+    """30-day live FII/DII fetch used when the precomputed parquet is absent."""
     try:
         nf = NSEFetcher(max_retries=2, retry_delay=1.0)
         return nf.fetch_recent_fii_dii(lookback_days=30) or []
